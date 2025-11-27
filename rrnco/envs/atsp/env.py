@@ -119,8 +119,9 @@ class ATSPEnv(RL4COEnvBase):
 
         # Other variables
         current_node = torch.zeros((*batch_size, 1), dtype=torch.int64, device=device)
+        num_loc = distance.shape[-1]
         available = torch.ones(
-            (*batch_size, self.generator.num_loc), dtype=torch.bool, device=device
+            (*batch_size, num_loc), dtype=torch.bool, device=device
         )  # 1 means not visited, i.e. action is allowed
         i = torch.zeros((*batch_size, 1), dtype=torch.int64, device=device)
 

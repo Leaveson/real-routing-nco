@@ -1,12 +1,6 @@
 # Real Routing NCO
 
-[![arXiv](https://img.shields.io/badge/arXiv-2503.16159-b31b1b.svg)](https://arxiv.org/abs/2503.16159)
 [![License: MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensource.org/licenses/MIT)
-[![HuggingFace Dataset](https://img.shields.io/badge/%F0%9F%A4%97-Dataset-yellow)](https://huggingface.co/ai4co/rrnco)
-[![HuggingFace Models](https://img.shields.io/badge/%F0%9F%A4%97-Models-yellow)](https://huggingface.co/datasets/ai4co/rrnco)
-
-
-> Note: we are currently finalizing the repository. Stay tuned!
 
 
 ### 🗺️ Problem
@@ -62,16 +56,61 @@ uv sync --all-extras # for all dependencies
 
 Note that this project is also compatible with normal `pip install -e .` in case you use a different package manager.
 
-### Data download
 
-Download data and checkpoints
-To download the data and checkpoints from HuggingFace automatically, you can use:
+## 📦 Test Dataset via Google Drive
 
+### download from our shared Google Drive folder
+
+If you want to test our model use the shared folder link and place contents under the top-level `data/` directory.
+
+- Link: [Google Drive dataset folder](https://drive.google.com/drive/folders/1RMz-gcW_k1sB8xYOSWxTaACe097JpiD-?usp=sharing)
+
+Option 1 — Browser:
+- Open the link above and download the subfolders `atsp/`, `rcvrp/`, `rcvrptw/`.
+- Create a local `data/` directory and move the downloaded subfolders inside it so that you have:
+  - `data/atsp/*.npz`
+  - `data/rcvrp/*.npz`
+  - `data/rcvrptw/*.npz`
+
+Option 2 — Command line (`gdown`):
 ```bash
-python scripts/download_hf.py
+uv pip install gdown
+# Download the entire folder recursively into ./data
+gdown --folder 'https://drive.google.com/drive/folders/1RMz-gcW_k1sB8xYOSWxTaACe097JpiD-?usp=sharing' -O data --remaining-ok
 ```
 
-You may use the option "--no-data" to skip the dataset or "--no-models" to skip the checkpoints.
+After download, verify you have the expected files:
+- `data/atsp/atsp_n100_seed3333_in_distribution*.npz`
+- `data/rcvrp/rcvrp_n100_seed3333_in_distribution*.npz`
+- `data/rcvrptw/rcvrptw_n100_seed3333_in_distribution*.npz`
+
+
+## 🧠 Checkpoints via Google Drive
+
+### download from our shared Google Drive folder
+
+If you want to evaluate using our pretrained checkpoints, use the shared folder link and place contents under the top-level `checkpoints/` directory.
+
+- Link: [Google Drive checkpoints folder](https://drive.google.com/drive/folders/1PMy3KzBHZbUIeV_vIy9vDnDTdmQ4Bt4Q?usp=sharing)
+
+Option 1 — Browser:
+- Open the link above and download the subfolders `atsp/`, `rcvrp/`, `rcvrptw/`.
+- Create a local `checkpoints/` directory and move the downloaded subfolders inside it so that you have:
+  - `checkpoints/atsp/epoch_199.ckpt`
+  - `checkpoints/rcvrp/epoch_199.ckpt`
+  - `checkpoints/rcvrptw/epoch_199.ckpt`
+
+Option 2 — Command line (`gdown`):
+```bash
+uv pip install gdown
+# Download the entire folder recursively into ./checkpoints
+gdown --folder 'https://drive.google.com/drive/folders/1PMy3KzBHZbUIeV_vIy9vDnDTdmQ4Bt4Q?usp=sharing' -O checkpoints --remaining-ok
+```
+
+After download, verify you have the expected files:
+- `checkpoints/atsp/epoch_199.ckpt`
+- `checkpoints/rcvrp/epoch_199.ckpt`
+- `checkpoints/rcvrptw/epoch_199.ckpt`
 
 
 ## Data generation
@@ -146,22 +185,4 @@ python test.py --problem rcvrp --datasets data/rcvrp/rcvrp_n100_seed3333_in_dist
 **RCVRPTW**
 ```bash
 python test.py --problem rcvrptw --datasets data/rcvrptw/rcvrptw_n100_seed3333_in_distribution.npz --batch_size 32 --checkpoint checkpoints/rcvrptw/epoch_199.ckpt
-```
-
-
-
-
-### 🤩 Citation
-If you find RRNCO valuable for your research or applied projects:
-
-```bibtex
-@article{son2025rrnco_neuralcombinatorialoptimizationrealworldrouting,
-      title={{Neural Combinatorial Optimization for Real-World Routing}},
-      author={Jiwoo Son and Zhikai Zhao and Federico Berto and Chuanbo Hua and Changhyun Kwon and Jinkyoo Park},
-      year={2025},
-      eprint={2503.16159},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://github.com/ai4co/real-routing-nco},
-}
 ```

@@ -31,11 +31,14 @@ class RVRPTWInitEmbedding(nn.Module):
 
         # Initialize embeddings based on configurations
         if not self.use_dist:
-            self.init_embed_depot = nn.Linear(2, embed_dim, linear_bias)
-            self.init_embed = nn.Linear(4, embed_dim, linear_bias)
+            self.init_embed_depot = nn.Linear(6, embed_dim, linear_bias)
+            self.init_embed = nn.Linear(7, embed_dim, linear_bias)
             if self.use_matnet_init:
                 self.combine_row_embed = nn.Linear(embed_dim * 2, embed_dim, linear_bias)
                 self.combine_col_embed = nn.Linear(embed_dim * 2, embed_dim, linear_bias)
+            else:
+                self.combine_row_embed = nn.Linear(embed_dim, embed_dim, linear_bias)
+                self.combine_col_embed = nn.Linear(embed_dim, embed_dim, linear_bias)
         else:
             if self.use_coords:
                 self.coord_expert = CoordinateExpert(3, embed_dim)
@@ -60,10 +63,10 @@ class RVRPTWInitEmbedding(nn.Module):
             return self._embed_without_distance(locs, vrp_attr, distance)
         return self._embed_with_distance(locs, vrp_attr, distance, phase)
 
-    def _embed_without_distance(self, locs, demand, distance):
+    def _embed_without_distance(self, locs, vrp_attr, distance):
         depot, cities = locs[:, :1, :], locs[:, 1:, :]
-        depot_embedding = self.init_embed_depot(depot)
-        cities_feats = torch.cat([cities, demand[..., None]], dim=-1)
+        depot_embedding = self.init_embed_depot(torch.cat([depot, vrp_attr[:,0:1]], dim=-1))
+        cities_feats = torch.cat([cities, vrp_attr[:,1:]], dim=-1)
 
         if self.use_polar_feats:
             city_locs_centered = cities - depot
@@ -82,8 +85,8 @@ class RVRPTWInitEmbedding(nn.Module):
             row_emb = self.combine_row_embed(torch.cat([row_emb, out], dim=-1))
             col_emb = self.combine_col_embed(torch.cat([col_emb, out], dim=-1))
             return row_emb, col_emb, distance
-
-        return out, out, distance
+        else:
+            return self.combine_row_embed(out), self.combine_col_embed(out), distance
 
     def _embed_with_distance(self, locs, vrp_attr, distance, phase):
         node_embeddings = self.coord_expert(locs)

@@ -44,7 +44,7 @@ class PrecomputedCache:
         return PrecomputedCache(*new_embs)
 
 
-class RRNetDecoder(AutoregressiveDecoder):
+class AAFMDecoder(AutoregressiveDecoder):
     """
     Auto-regressive decoder based on Kool et al. (2019): https://arxiv.org/abs/1803.08475.
     Given the environment state and the embeddings, compute the logits and sample actions autoregressively until
@@ -72,7 +72,6 @@ class RRNetDecoder(AutoregressiveDecoder):
     def __init__(
         self,
         embed_dim: int = 128,
-        num_heads: int = 8,
         env_name: str = "rcvrp",
         context_embedding: nn.Module = None,
         dynamic_embedding: nn.Module = None,
@@ -81,7 +80,6 @@ class RRNetDecoder(AutoregressiveDecoder):
         linear_bias: bool = False,
         use_graph_context: bool = True,
         check_nan: bool = True,
-        sdpa_fn: callable = None,
         pointer: nn.Module = None,
         moe_kwargs: dict = None,
     ):
@@ -91,11 +89,10 @@ class RRNetDecoder(AutoregressiveDecoder):
             env_name = env_name.name
         self.env_name = env_name
         self.embed_dim = embed_dim
-        self.num_heads = num_heads
+        self.Wq_last = nn.Linear(embed_dim+1, embed_dim, bias=False)
+        self.alpha1 = nn.Parameter(torch.tensor([1.0]))
+        self.alpha2 = nn.Parameter(torch.tensor([1.0]))
 
-        assert embed_dim % num_heads == 0
-        if env_name == "rcvrptw":
-            self.beta = nn.Parameter(torch.tensor([1.0]))
         self.context_embedding = (
             env_context_embedding(self.env_name, {"embed_dim": embed_dim})
             if context_embedding is None
@@ -110,15 +107,8 @@ class RRNetDecoder(AutoregressiveDecoder):
             False if isinstance(self.dynamic_embedding, StaticEmbedding) else True
         )
 
-        self.pointer = RRNet_PointerAttention(embed_dim, num_heads)
-
-        # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embed_dim
-        self.project_node_embeddings = nn.Linear(
-            embed_dim, 3 * embed_dim, bias=linear_bias
-        )
-        self.project_fixed_context = nn.Linear(embed_dim, embed_dim, bias=linear_bias)
-        self.use_graph_context = use_graph_context
-        self.alpha = nn.Parameter(torch.tensor([1.0]))
+        self.project_node_embeddings = nn.Linear(embed_dim, 3 * embed_dim, bias=False)
+        self.pointer = AAFM_pointer(embed_dim)
 
     def _compute_q(self, cached: PrecomputedCache, td: TensorDict):
         node_embeds_cache = cached.node_embeddings
@@ -174,27 +164,16 @@ class RRNetDecoder(AutoregressiveDecoder):
 
         glimpse_q = self._compute_q(cached, td)
         glimpse_k, glimpse_v, logit_k = self._compute_kvl(cached, td)
+        log2_N = torch.log2(torch.tensor(td["distance_matrix"].shape[-1], dtype=td["distance_matrix"].dtype, device=td["distance_matrix"].device))
 
         # Compute logits
         mask = td["action_mask"]
+        distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2)
+        adaptation_bias =  -1 * self.alpha1 * log2_N * distance
 
-        logits = self.pointer(glimpse_q, glimpse_k, glimpse_v, logit_k, mask)
-
-        # Compute inductive bias
-
-        # distance = td["distance"] / (td["distance"].max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0] + 1e-6)
-        if self.env_name == "rcvrptw":
-            distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2)
-            duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2)
-            inductive_bias = self.alpha * distance + self.beta * duration
-            # inductive_bias = self.alpha * distance
-        else:
-            inductive_bias = self.alpha * gather_by_index(
-                td["distance_matrix"], td["current_node"], dim=-2
-            )
-
+        logits = self.pointer(glimpse_q, glimpse_k, glimpse_v, adaptation_bias, mask)
         logits = logits.to(torch.float32)
-        inductive_bias = inductive_bias.to(torch.float32)
+        inductive_bias = -1 * self.alpha2 * log2_N * distance
 
         logits = torch.log(torch.exp(logits - inductive_bias) + 1e-6)
         # Now we need to reshape the logits and mask to [B*S,N,...] is num_starts > 1 without dynamic embeddings
@@ -213,7 +192,10 @@ class RRNetDecoder(AutoregressiveDecoder):
         return td, env, self._precompute_cache(embeddings, num_starts=num_starts)
 
     def _precompute_cache(self, embeddings: Tuple[Tensor, Tensor], num_starts: int = 0):
-        row_emb, col_emb = embeddings
+        if isinstance(embeddings, tuple):
+            row_emb, col_emb = embeddings
+        else:
+            row_emb = col_emb = embeddings
 
         (
             glimpse_key_fixed,
@@ -233,7 +215,7 @@ class RRNetDecoder(AutoregressiveDecoder):
         )
 
 
-class RRNet_PointerAttention(nn.Module):
+class AAFM_pointer(nn.Module):
     """Calculate logits given query, key and value and logit key.
     This follows the pointer mechanism of Vinyals et al. (2015) (https://arxiv.org/abs/1506.03134).
 
@@ -257,74 +239,36 @@ class RRNet_PointerAttention(nn.Module):
     def __init__(
         self,
         embed_dim: int,
-        num_heads: int,
         mask_inner: bool = True,
         out_bias: bool = False,
         check_nan: bool = True,
         sdpa_fn: Optional[Callable] = None,
         **kwargs,
     ):
-        super(RRNet_PointerAttention, self).__init__()
-        self.num_heads = num_heads
+        super(AAFM_pointer, self).__init__()
         self.mask_inner = mask_inner
+        self.hidden_dim = embed_dim
+        self.project = nn.Linear(embed_dim, embed_dim, bias=out_bias)
+        
+    
+    def forward(self, q, k, v, adaptation_bias, mask=None):
+        B, T, _ = q.shape
+        Q = q
+        K = k
+        V = v
+        Q_sig = torch.sigmoid(Q)
 
-        # Projection - query, key, value already include projections
-        self.project_out = nn.Linear(embed_dim, embed_dim, bias=out_bias)
-        self.ffn = MLP(
-            input_dim=embed_dim,
-            output_dim=embed_dim,
-            num_neurons=[embed_dim * 4],
-            hidden_act="ReLU",
-        )
-        self.sdpa_fn = sdpa_fn if sdpa_fn is not None else scaled_dot_product_attention
-        self.check_nan = check_nan
+        adapt_bias = torch.softmax(adaptation_bias, dim=-1)
+        K = torch.softmax(K, dim=1)
+        temp = torch.exp(adapt_bias) @ torch.mul(torch.exp(K), V)
+        weighted = temp / (torch.exp(adapt_bias) @ torch.exp(K))
 
-    def forward(self, query, key, value, logit_key, attn_mask=None):
-        """Compute attention logits given query, key, value, logit key and attention mask.
+        Yt = torch.mul(Q_sig, weighted)
+        Yt = Yt.view(B, T, self.hidden_dim)
+        Yt = self.project(Yt)
 
-        Args:
-            query: query tensor of shape [B, ..., L, E]
-            key: key tensor of shape [B, ..., S, E]
-            value: value tensor of shape [B, ..., S, E]
-            logit_key: logit key tensor of shape [B, ..., S, E]
-            attn_mask: attention mask tensor of shape [B, ..., S]. Note that `True` means that the value _should_ take part in attention
-                as described in the [PyTorch Documentation](https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
-        """
-        # Compute inner multi-head attention with no projections.
-        heads = self._inner_mha(query, key, value, attn_mask)
-        glimpse = heads + query
-        # glimpse = self._project_out(heads, attn_mask)
-        glimpse = self.ffn(glimpse) + glimpse
-        # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
-        # bmm is slightly faster than einsum and matmul
-        logits = (torch.bmm(glimpse, logit_key.squeeze(-2).transpose(-2, -1))).squeeze(
-            -2
-        ) / math.sqrt(glimpse.size(-1))
-
-        if self.check_nan:
-            assert not torch.isnan(logits).any(), "Logits contain NaNs"
+        # Compute logits
+        logits = torch.matmul(Yt, k.transpose(-2, -1)) / math.sqrt(self.hidden_dim)
 
         return logits
 
-    def _inner_mha(self, query, key, value, attn_mask):
-        q = self._make_heads(query)
-        k = self._make_heads(key)
-        v = self._make_heads(value)
-        if self.mask_inner:
-            # make mask the same number of dimensions as q
-            attn_mask = (
-                attn_mask.unsqueeze(1)
-                if attn_mask.ndim == 3
-                else attn_mask.unsqueeze(1).unsqueeze(2)
-            )
-        else:
-            attn_mask = None
-
-        heads = self.sdpa_fn(q, k, v, attn_mask=attn_mask)
-        return rearrange(heads, "... h n g -> ... n (h g)", h=self.num_heads)
-
-    def _make_heads(self, v):
-        return rearrange(v, "... g (h s) -> ... h g s", h=self.num_heads)
-
-    def _project_out(self, out, *kwargs):
-        return self.project_out(out)

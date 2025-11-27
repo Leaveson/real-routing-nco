@@ -194,7 +194,7 @@ class LazyATSPGenerator(Generator):
                 chunk_data = sampled_data
             else:
                 # Efficient concatenation
-                for key in ["points", "distance", "duration"]:
+                for key in ["points", "distance_matrix", "duration"]:
                     if key in sampled_data:
                         chunk_data[key] = np.concatenate(
                             (chunk_data[key], sampled_data[key]), axis=0
@@ -235,7 +235,7 @@ class LazyATSPGenerator(Generator):
     def _process_real_world_data(self, chunk_data: dict, batch_size: list) -> TensorDict:
         """Process real world data into TensorDict"""
         # Use distance matrix directly from real world data
-        distance = torch.from_numpy(chunk_data["distance"].astype(np.float32))
+        distance = torch.from_numpy(chunk_data["distance_matrix"].astype(np.float32))
 
         return TensorDict(
             {

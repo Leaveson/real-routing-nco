@@ -146,7 +146,13 @@ class RCVRPEnv(RL4COEnvBase):
 
         # Common fields for TensorDict
         td_reset_data = {
-            "locs": torch.cat((td["depot"][:, None, :], td["locs"]), dim=-2),
+            "locs": torch.cat(
+                (
+                    td["depot"].unsqueeze(1) if td["depot"].ndim == 2 else td["depot"],
+                    td["locs"],
+                ),
+                dim=-2,
+            ),
             "distance_matrix": distance,
             "demand": td["demand"],
             "current_node": torch.zeros(*batch_size, 1, dtype=torch.long, device=device),
