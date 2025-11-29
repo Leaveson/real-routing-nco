@@ -193,8 +193,6 @@ class AAFMPolicy(AutoregressivePolicy):
             **decoding_kwargs,
         )
 
-        decode_strategy.num_starts = td["locs"].shape[1] - 1
-
         # Pre-decoding hook: used for the initial step(s) of the decoding strategy
         td, env, num_starts = decode_strategy.pre_decoder_hook(td, env)
 

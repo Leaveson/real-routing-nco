@@ -7,7 +7,7 @@ from .atsp import ATSPInitEmbedding
 from .context import MTVRPContextEmbedding
 from .rcvrp import RVRPInitEmbedding
 from .rcvrptw import RVRPTWInitEmbedding
-from .smtvrp import SMTVRPInitEmbedding
+
 
 def env_embedding_register(
     env_name: str, config: dict, registry_default: dict, registry_custom: dict = None
@@ -32,7 +32,6 @@ def env_init_embedding(env_name: str, config: dict, registry: dict = None) -> nn
         "atsp": ATSPInitEmbedding,
         "rcvrp": RVRPInitEmbedding,
         "rcvrptw": RVRPTWInitEmbedding,
-        "smtvrp": SMTVRPInitEmbedding,
     }
     return env_embedding_register(env_name, config, emb_registry, registry)
 
@@ -45,7 +44,6 @@ def env_context_embedding(
         "atsp": TSPContext,
         "rcvrp": VRPContext,
         "rcvrptw": MTVRPContextEmbedding,
-        "smtvrp": MTVRPContextEmbedding,
     }
     return env_embedding_register(env_name, config, emb_registry, registry)
 
@@ -61,7 +59,6 @@ def env_dynamic_embedding(
         "atsp": StaticEmbedding,
         "rcvrp": StaticEmbedding,
         "rcvrptw": StaticEmbedding,
-        "smtvrp": StaticEmbedding,
     }
     # if not in key, just return static embedding
     if env_name not in emb_registry.keys():

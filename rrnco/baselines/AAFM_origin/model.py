@@ -7,24 +7,14 @@ from rl4co.models.rl.reinforce.reinforce import REINFORCE
 from rl4co.utils.ops import gather_by_index, unbatchify
 from rl4co.utils.pylogger import get_pylogger
 
-from rrnco.models.policy import RRNetPolicy
-from rrnco.models.utils.transforms import StateAugmentation
+from rrnco.baselines.AAFM.policy import AAFMPolicy
+from rrnco.baselines.AAFM.utils.transforms import StateAugmentation
 
 log = get_pylogger(__name__)
 
 
-class RRNet(REINFORCE):
-    """This model is based on POMO Model for neural combinatorial optimization based on REINFORCE
-    Based on Kwon et al. (2020) http://arxiv.org/abs/2010.16011.
-
-    Note:
-        If no policy kwargs is passed, we use the Attention Model policy with the following arguments:
-        Differently to the base class:
-        - `num_encoder_layers=6` (instead of 3)
-        - `normalization="instance"` (instead of "batch")
-        - `use_graph_context=False` (instead of True)
-        The latter is due to the fact that the paper does not use the graph context in the policy, which seems to be
-        helpful in overfitting to the training graph size.
+class AAFM(REINFORCE):
+    """This model is based on AAFM Model for neural combinatorial optimization based on REINFORCE
 
     Args:
         env: TorchRL Environment
@@ -68,12 +58,12 @@ class RRNet(REINFORCE):
                 "use_graph_context": False,
             }
             policy_kwargs_with_defaults.update(policy_kwargs)
-            policy = RRNetPolicy(env_name=env.name, **policy_kwargs_with_defaults)
+            policy = AAFMPolicy(env_name=env.name, **policy_kwargs_with_defaults)
 
-        assert baseline == "shared", "RRNet only supports shared baseline"
+        assert baseline == "shared", "AAFM only supports shared baseline"
 
         # Initialize with the shared baseline
-        super(RRNet, self).__init__(env, policy, baseline, **kwargs)
+        super(AAFM, self).__init__(env, policy, baseline, **kwargs)
 
         self.num_starts = num_starts
         self.num_augment = num_augment
@@ -98,7 +88,6 @@ class RRNet(REINFORCE):
         td = self.env.reset(batch)
         n_aug, n_start = self.num_augment, self.num_starts
         n_start = self.env.get_num_starts(td) if n_start is None else n_start
-        # log.info(f"DEBUG: phase={phase}, n_aug={n_aug}, n_start={n_start}, batch_size={td.batch_size}")
 
         # During training, we do not augment the data
         if phase == "train":
@@ -118,13 +107,7 @@ class RRNet(REINFORCE):
         if phase == "train":
             assert n_start > 1, "num_starts must be > 1 during training"
             log_likelihood = unbatchify(out["log_likelihood"], (n_aug, n_start))
-            if self.env.normalize:
-                self.calculate_loss(td, batch, out, norm_reward, log_likelihood)
-            else:
-                if self.env_name == "smtvrp":
-                    self.calculate_loss(td, batch, out, reward / 1440, log_likelihood)
-                else:
-                    self.calculate_loss(td, batch, out, reward, log_likelihood)
+            self.calculate_loss(td, batch, out, norm_reward, log_likelihood)
             max_reward, max_idxs = reward.max(dim=-1)
             out.update({"max_reward": max_reward})
         # Get multi-start (=POMO) rewards and best actions only during validation and test

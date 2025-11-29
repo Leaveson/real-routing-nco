@@ -87,7 +87,8 @@ class AAFM(REINFORCE):
     ):
         td = self.env.reset(batch)
         n_aug, n_start = self.num_augment, self.num_starts
-        n_start = self.env.get_num_starts(td) if n_start is None else n_start
+        n_start = td["locs"].shape[1] - 1 if n_start is None else n_start
+        
 
         # During training, we do not augment the data
         if phase == "train":

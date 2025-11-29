@@ -1,0 +1,16 @@
+
+
+_target_: rrnco.envs.smtvrp.env.SMTVRPEnv
+name: smtvrp
+
+generator_params:
+  _target_: rrnco.envs.smtvrp.generator.SMTVRPGenerator
+  num_loc: 50
+  is_dynamic: False
+# Validation/Test files (Optional, set to null if generating on the fly or not available)
+data_dir: ${paths.root_dir}/data/${env.name}
+val_file: [
+  "smtvrp_n50_seed3333_in_distribution.npz"
+]
+val_dataloader_names: ["val"]
+test_file: ${env.val_file}

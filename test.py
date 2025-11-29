@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from rrnco.baselines.routefinder.model import RouteFinderBase
+from rrnco.baselines.AAFM.model import AAFM
 from rrnco.envs.atsp import ATSPEnv
 from rrnco.envs.rcvrp import RCVRPEnv
 from rrnco.envs.rmtvrp import RMTVRPEnv
@@ -102,14 +103,18 @@ if __name__ == "__main__":
     if problem == "atsp" or problem == "rcvrptw" or "routefinder" in checkpoint_path:
         n_start = 100
     else:
-        n_start = 101
+        if "aafm" in checkpoint_path:
+            n_start = 100
+        else:
+            n_start = 101
     # Load the checkpoint as usual
     print("Loading checkpoint from ", checkpoint_path)
 
     # monkey patch for RF-based models
     if "routefinder" in checkpoint_path:
         RRNet = RouteFinderBase
-
+    if "aafm" in checkpoint_path:
+        RRNet = AAFM
     # model = RRNet(env=RMTVRPEnv())
     model = RRNet.load_from_checkpoint(
         checkpoint_path, map_location="cpu", strict=False, load_baseline=False

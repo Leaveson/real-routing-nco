@@ -173,20 +173,15 @@ class AAFMDecoder(AutoregressiveDecoder):
 
         logits = self.pointer(glimpse_q, glimpse_k, glimpse_v, adaptation_bias, mask)
         logits = logits.to(torch.float32)
-        inductive_bias = self.alpha2 * log2_N * distance
+        inductive_bias = -1 * self.alpha2 * log2_N * distance
 
         logits = torch.log(torch.exp(logits - inductive_bias) + 1e-6)
         # Now we need to reshape the logits and mask to [B*S,N,...] is num_starts > 1 without dynamic embeddings
         # note that rearranging order is important here
 
         if num_starts > 1 and not has_dyn_emb_multi_start:
-            assert logits.size(1) == num_starts, f"Logits dim 1 {logits.size(1)} != num_starts {num_starts}"
-            assert mask.size(1) == num_starts, f"Mask dim 1 {mask.size(1)} != num_starts {num_starts}"
             logits = rearrange(logits, "b s l -> (s b) l", s=num_starts)
             mask = rearrange(mask, "b s l -> (s b) l", s=num_starts)
-        
-        if logits.ndim == 3 and logits.size(1) == 1:
-            logits = logits.squeeze(1)
 
         return logits, mask
 
@@ -253,7 +248,6 @@ class AAFM_pointer(nn.Module):
         super(AAFM_pointer, self).__init__()
         self.mask_inner = mask_inner
         self.hidden_dim = embed_dim
-        self.check_nan = check_nan
         self.project = nn.Linear(embed_dim, embed_dim, bias=out_bias)
         
     
@@ -275,9 +269,6 @@ class AAFM_pointer(nn.Module):
 
         # Compute logits
         logits = torch.matmul(Yt, k.transpose(-2, -1)) / math.sqrt(self.hidden_dim)
-
-        if self.check_nan and torch.isnan(logits).any():
-             raise RuntimeError("Logits contain NaNs!")
 
         return logits
 

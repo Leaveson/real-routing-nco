@@ -94,7 +94,7 @@ class RRNetDecoder(AutoregressiveDecoder):
         self.num_heads = num_heads
 
         assert embed_dim % num_heads == 0
-        if env_name == "rcvrptw":
+        if env_name == "rcvrptw" or env_name == "smtvrp":
             self.beta = nn.Parameter(torch.tensor([1.0]))
         self.context_embedding = (
             env_context_embedding(self.env_name, {"embed_dim": embed_dim})
@@ -163,6 +163,7 @@ class RRNetDecoder(AutoregressiveDecoder):
         """
 
         has_dyn_emb_multi_start = self.is_dynamic_embedding and num_starts > 1
+        # log.info(f"DEBUG: has_dyn_emb_multi_start={has_dyn_emb_multi_start}, is_dynamic_embedding={self.is_dynamic_embedding}, num_starts={num_starts}")
 
         # Handle efficient multi-start decoding
         if has_dyn_emb_multi_start:
@@ -183,7 +184,7 @@ class RRNetDecoder(AutoregressiveDecoder):
         # Compute inductive bias
 
         # distance = td["distance"] / (td["distance"].max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0] + 1e-6)
-        if self.env_name == "rcvrptw":
+        if self.env_name == "rcvrptw" or self.env_name == "smtvrp":
             distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2)
             duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2)
             inductive_bias = self.alpha * distance + self.beta * duration

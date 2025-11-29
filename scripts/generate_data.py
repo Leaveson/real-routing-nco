@@ -7,6 +7,7 @@ import orjson
 
 from rl4co.data.utils import check_extension
 from rl4co.utils.pylogger import get_pylogger
+from rrnco.envs.smtvrp.generator import SMTVRPGenerator
 
 log = get_pylogger(__name__)
 
@@ -224,6 +225,21 @@ def prepare_atsp_data(sampled_data):
     }
 
 
+def prepare_smtvrp_data(dataset_size, graph_size):
+    """Prepare SMTVRP-specific data using SMTVRPGenerator."""
+    generator = SMTVRPGenerator(
+        num_loc=graph_size,
+    )
+    # Generate data (returns TensorDict)
+    td = generator(batch_size=[dataset_size])
+    
+    # Convert to numpy dict
+    data = {
+        k: v.numpy() for k, v in td.items()
+    }
+    return data
+
+
 def get_vehicle_capacity(num_loc):
     if num_loc > 1000:
         extra_cap = 1000 // 5 + (num_loc - 1000) // 33.3
@@ -383,7 +399,8 @@ def generate_env_data(
     **kwargs,
 ):
     """Generate data for a given environment type."""
-    cities_list = load_cities_list(data_dir, in_distribution)
+    if env_type != "smtvrp":
+        cities_list = load_cities_list(data_dir, in_distribution)
 
     if env_type == "rcvrp":
         sampled_data = sample_data(
@@ -400,6 +417,8 @@ def generate_env_data(
             data_dir, cities_list, dataset_size, graph_size + 1, dist_type
         )
         return prepare_rcvrptw_data(sampled_data, dataset_size, graph_size)
+    elif env_type == "smtvrp":
+        return prepare_smtvrp_data(dataset_size, graph_size)
     else:
         raise NotImplementedError(f"Environment type '{env_type}' not implemented.")
 
