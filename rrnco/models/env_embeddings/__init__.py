@@ -8,6 +8,7 @@ from .context import MTVRPContextEmbedding
 from .rcvrp import RVRPInitEmbedding
 from .rcvrptw import RVRPTWInitEmbedding
 from .smtvrp import SMTVRPInitEmbedding
+from .context import SMTVRPContextEmbedding
 
 def env_embedding_register(
     env_name: str, config: dict, registry_default: dict, registry_custom: dict = None
@@ -45,7 +46,7 @@ def env_context_embedding(
         "atsp": TSPContext,
         "rcvrp": VRPContext,
         "rcvrptw": MTVRPContextEmbedding,
-        "smtvrp": MTVRPContextEmbedding,
+        "smtvrp": SMTVRPContextEmbedding,
     }
     return env_embedding_register(env_name, config, emb_registry, registry)
 

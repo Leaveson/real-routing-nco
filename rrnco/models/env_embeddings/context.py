@@ -31,6 +31,35 @@ class EnvContext(nn.Module):
         return self.project_context(context_embedding)
 
 
+class SMTVRPContextEmbedding(EnvContext):
+    def __init__(self, embed_dim=128, default_remain_dist=10):
+        super(SMTVRPContextEmbedding, self).__init__(
+            embed_dim=embed_dim, step_context_dim=embed_dim + 4
+        )
+        self.default_remain_dist = default_remain_dist
+
+    def _state_embedding(self, embeddings, td):
+        mask = td["used_capacity_backhaul"] == 0
+        used_capacity = torch.where(
+            mask, td["used_capacity_linehaul"], td["used_capacity_backhaul"]
+        )
+        available_load = td["vehicle_capacity"] - used_capacity
+        remaining_dist = torch.nan_to_num(
+            td["distance_limit"] - td["current_route_length"] / 1000,
+            posinf=self.default_remain_dist,
+        )
+        context_feats = torch.cat(
+            (
+                available_load,
+                td["current_time"] / 1440,
+                td["open_route"].float(),
+                remaining_dist,
+            ),
+            -1,
+        )
+        return context_feats
+
+
 class MTVRPContextEmbedding(EnvContext):
     """Context embedding MTVRP.
     - current time

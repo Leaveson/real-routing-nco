@@ -283,8 +283,8 @@ class DistAngleFusion(nn.Module):
         # 7) Generate the adapt_bias (scalar) for AFTFull
         #    (B, N, N, E) -> linear -> (B, N, N, 1) -> squeeze(-1) -> (B, N, N)
 
-        # adapt_bias = self.out_lin(fused_emb).squeeze(-1)  # shape (B, N, N)
-        adapt_bias = self.out_lin(dist_emb).squeeze(-1)  # shape (B, N, N)
+        adapt_bias = self.out_lin(fused_emb).squeeze(-1)  # shape (B, N, N)
+        # adapt_bias = self.out_lin(dist_emb).squeeze(-1)  # shape (B, N, N)
 
         return adapt_bias
 

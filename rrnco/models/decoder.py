@@ -184,11 +184,15 @@ class RRNetDecoder(AutoregressiveDecoder):
         # Compute inductive bias
 
         # distance = td["distance"] / (td["distance"].max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0] + 1e-6)
-        if self.env_name == "rcvrptw" or self.env_name == "smtvrp":
+        if self.env_name == "rcvrptw":
             distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2)
             duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2)
             inductive_bias = self.alpha * distance + self.beta * duration
             # inductive_bias = self.alpha * distance
+        elif self.env_name == "smtvrp":
+            distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2) / 1440
+            duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2) / 1440
+            inductive_bias = self.alpha * distance + self.beta * duration
         else:
             inductive_bias = self.alpha * gather_by_index(
                 td["distance_matrix"], td["current_node"], dim=-2

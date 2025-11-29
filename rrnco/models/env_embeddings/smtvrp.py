@@ -53,7 +53,7 @@ class SMTVRPInitEmbedding(nn.Module):
         locs = td["locs"].float() / 1000
         demand = td["demand_linehaul"]
         time_windows = td["time_windows"] / 1440
-        service_time = td["service_time"]
+        service_time = td["service_time"] / 1440
         vrp_attr = torch.cat(
             [demand.unsqueeze(-1), time_windows, service_time.unsqueeze(-1)], dim=-1
         )
