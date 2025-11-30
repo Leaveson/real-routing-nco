@@ -5,6 +5,7 @@ from typing import Callable, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from einops import rearrange
 from rl4co.envs import RL4COEnvBase
@@ -109,8 +110,10 @@ class RRNetDecoder(AutoregressiveDecoder):
         self.is_dynamic_embedding = (
             False if isinstance(self.dynamic_embedding, StaticEmbedding) else True
         )
-
-        self.pointer = RRNet_PointerAttention(embed_dim, num_heads)
+        if env_name == "smtvrp":
+            self.pointer = RRNet_PointerAttention_V2(embed_dim)
+        # else:
+        # self.pointer = RRNet_PointerAttention(embed_dim, num_heads)
 
         # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embed_dim
         self.project_node_embeddings = nn.Linear(
@@ -178,20 +181,32 @@ class RRNetDecoder(AutoregressiveDecoder):
 
         # Compute logits
         mask = td["action_mask"]
+        
+        if self.env_name == "smtvrp":
+            coords = td["locs"]
+            # Calculate the pairwise differences
+            coords_expanded_1 = coords.unsqueeze(-2)  # (batch_size, [num_starts], N, 1, 2)
+            coords_expanded_2 = coords.unsqueeze(-3)  # (batch_size, [num_starts], 1, N, 2)
+            pairwise_diff = coords_expanded_1 - coords_expanded_2  # (batch_size, [num_starts], N, N, 2)
+            # Compute pairwise angles using atan2
 
-        logits = self.pointer(glimpse_q, glimpse_k, glimpse_v, logit_k, mask)
-
+            angles = gather_by_index(torch.atan2(
+                pairwise_diff[..., 1], pairwise_diff[..., 0]
+            ), td["current_node"], dim=-2)  # (batch_size, N, N)
+            distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2) / 1440
+            duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2) / 1440
+            logits = self.pointer(angles, distance, duration, glimpse_q, glimpse_k, glimpse_v, logit_k, mask)
+        # else:
+        # logits = self.pointer(glimpse_q, glimpse_k, glimpse_v, logit_k, mask)
         # Compute inductive bias
-
-        # distance = td["distance"] / (td["distance"].max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0] + 1e-6)
         if self.env_name == "rcvrptw":
             distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2)
             duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2)
             inductive_bias = self.alpha * distance + self.beta * duration
             # inductive_bias = self.alpha * distance
         elif self.env_name == "smtvrp":
-            distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2) / 1440
-            duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2) / 1440
+            # distance = gather_by_index(td["distance_matrix"], td["current_node"], dim=-2) / 1440
+            # duration = gather_by_index(td["duration_matrix"], td["current_node"], dim=-2) / 1440
             inductive_bias = self.alpha * distance + self.beta * duration
         else:
             inductive_bias = self.alpha * gather_by_index(
@@ -333,3 +348,178 @@ class RRNet_PointerAttention(nn.Module):
 
     def _project_out(self, out, *kwargs):
         return self.project_out(out)
+
+class RRNet_PointerAttention_V2(nn.Module):
+    """Calculate logits given query, key and value and logit key.
+    This follows the pointer mechanism of Vinyals et al. (2015) (https://arxiv.org/abs/1506.03134).
+
+    Note:
+        With Flash Attention, masking is not supported
+
+    Performs the following:
+        1. Apply cross attention to get the heads
+        2. Project heads to get glimpse
+        3. Compute attention score between glimpse and logit key
+
+    Args:
+        embed_dim: total dimension of the model
+        num_heads: number of heads
+        mask_inner: whether to mask inner attention
+        linear_bias: whether to use bias in linear projection
+        check_nan: whether to check for NaNs in logits
+        sdpa_fn: scaled dot product attention function (SDPA) implementation
+    """
+
+    def __init__(
+        self,
+        embed_dim: int,
+        mask_inner: bool = True,
+        out_bias: bool = False,
+        check_nan: bool = True,
+        sdpa_fn: Optional[Callable] = None,
+        **kwargs,
+    ):
+        super(RRNet_PointerAttention_V2, self).__init__()
+        self.mask_inner = mask_inner
+        self.hidden_dim = embed_dim
+
+        # Projection - query, key, value already include projections
+        self.dist_emb = nn.Sequential(
+            nn.Linear(1, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),  # output shape: (B, R, C, E)
+        )
+        self.angle_emb = nn.Sequential(
+            nn.Linear(1, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),  # output shape: (B, R, C, E)
+        )
+        self.dur_emb = nn.Sequential(
+            nn.Linear(1, embed_dim),
+            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),  # output shape: (B, R, C, E)
+        )
+        self.gate = nn.Sequential(
+                nn.Linear(3 * embed_dim, embed_dim),
+                nn.SiLU(),
+                nn.Linear(embed_dim, 3),
+            )
+        self.gate_temperature = nn.Parameter(torch.tensor(5.0))
+        self.out_lin = nn.Linear(embed_dim, 1)
+        self.project_out = nn.Linear(embed_dim, embed_dim, bias=out_bias)
+        self.multi_head_combine = nn.Linear(embed_dim, embed_dim)
+        self.norm1 = Normalization(embed_dim=embed_dim, normalization="instance")
+        self.ffn = MLP(
+            input_dim=embed_dim,
+            output_dim=embed_dim,
+            num_neurons=[embed_dim * 4],
+            hidden_act="ReLU",
+        )
+        self.sdpa_fn = sdpa_fn if sdpa_fn is not None else scaled_dot_product_attention
+        self.check_nan = check_nan
+
+    def forward(self, angles, distance, duration, query, key, value, logit_key, attn_mask=None):
+        """Compute attention logits given query, key, value, logit key and attention mask.
+
+        Args:
+            query: query tensor of shape [B, ..., L, E]
+            key: key tensor of shape [B, ..., S, E]
+            value: value tensor of shape [B, ..., S, E]
+            logit_key: logit key tensor of shape [B, ..., S, E]
+            attn_mask: attention mask tensor of shape [B, ..., S]. Note that `True` means that the value _should_ take part in attention
+                as described in the [PyTorch Documentation](https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)
+        """
+        B, T, _ = query.shape
+        dist_emb = self.dist_emb(distance.unsqueeze(-1))
+        angle_emb = self.angle_emb(angles.unsqueeze(-1))
+        dur_emb = self.dur_emb(duration.unsqueeze(-1))
+        gate_in = torch.cat([dist_emb, angle_emb, dur_emb], dim=-1)
+        logits = self.gate(gate_in)
+        g = F.softmax(logits / self.gate_temperature.exp(), dim=-1)
+        fused_emb = g[..., [0]] * dist_emb + g[..., [1]] * angle_emb + g[..., [2]] * dur_emb
+        adapt_bias = self.out_lin(fused_emb).squeeze(-1)
+        adapt_bias[~attn_mask] = -float("inf")
+        adapt_bias = torch.softmax(adapt_bias, dim=-1)
+        Q = torch.sigmoid(query)
+        K = torch.softmax(key, dim=1)
+        temp = torch.exp(adapt_bias) @ torch.mul(torch.exp(K), value)
+        weighted = temp / (torch.exp(adapt_bias) @ torch.exp(K)) 
+        Yt = torch.mul(Q, weighted)
+        Yt = Yt.view(B, T, self.hidden_dim)
+        Yt = self.project_out(Yt)
+        # Compute inner multi-head attention with no projections.
+        # heads = self._inner_mha(query, key, value, attn_mask)
+        glimpse = self.norm1(Yt) + query
+        # glimpse = self._project_out(heads, attn_mask)
+        glimpse = self.ffn(glimpse) + glimpse
+        # Batch matrix multiplication to compute logits (batch_size, num_steps, graph_size)
+        # bmm is slightly faster than einsum and matmul
+        logits = (torch.bmm(glimpse, logit_key.squeeze(-2).transpose(-2, -1))).squeeze(
+            -2
+        ) / math.sqrt(glimpse.size(-1))
+
+        if self.check_nan:
+            assert not torch.isnan(logits).any(), "Logits contain NaNs"
+
+        return logits
+
+    def _inner_mha(self, query, key, value, attn_mask):
+        q = self._make_heads(query)
+        k = self._make_heads(key)
+        v = self._make_heads(value)
+        if self.mask_inner:
+            # make mask the same number of dimensions as q
+            attn_mask = (
+                attn_mask.unsqueeze(1)
+                if attn_mask.ndim == 3
+                else attn_mask.unsqueeze(1).unsqueeze(2)
+            )
+        else:
+            attn_mask = None
+
+        heads = self.sdpa_fn(q, k, v, attn_mask=attn_mask)
+        return rearrange(heads, "... h n g -> ... n (h g)", h=self.num_heads)
+
+    def _make_heads(self, v):
+        return rearrange(v, "... g (h s) -> ... h g s", h=self.num_heads)
+
+    # def _project_out(self, out, *kwargs):
+    #     return self.project_out(out)
+
+
+class Normalization(nn.Module):
+    def __init__(self, embed_dim, normalization="batch"):
+        super(Normalization, self).__init__()
+        if normalization != "layer":
+            normalizer_class = {
+                "batch": nn.BatchNorm1d,
+                "instance": nn.InstanceNorm1d,
+            }.get(normalization, None)
+            self.normalizer = (
+                normalizer_class(embed_dim, affine=True)
+                if normalizer_class is not None
+                else None
+            )
+        else:
+            self.normalizer = "layer"
+        if self.normalizer is None:
+            log.error(
+                "Normalization type {} not found. Skipping normalization.".format(
+                    normalization
+                )
+            )
+
+    def forward(self, x):
+        if isinstance(self.normalizer, nn.BatchNorm1d):
+            return self.normalizer(x.view(-1, x.size(-1))).view(*x.size())
+        elif isinstance(self.normalizer, nn.InstanceNorm1d):
+            return self.normalizer(x.permute(0, 2, 1)).permute(0, 2, 1)
+        elif self.normalizer == "layer":
+            return (x - x.mean((1, 2)).view(-1, 1, 1)) / torch.sqrt(
+                x.var((1, 2)).view(-1, 1, 1) + 1e-05
+            )
+        else:
+            assert self.normalizer is None, "Unknown normalizer type {}".format(
+                self.normalizer
+            )
+            return x

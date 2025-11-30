@@ -16,6 +16,7 @@ from rrnco.baselines.AAFM.model import AAFM
 from rrnco.envs.atsp import ATSPEnv
 from rrnco.envs.rcvrp import RCVRPEnv
 from rrnco.envs.rmtvrp import RMTVRPEnv
+from rrnco.envs.smtvrp import SMTVRPEnv
 from rrnco.models import RRNet
 from rrnco.models.utils.transforms import StateAugmentation
 
@@ -120,6 +121,7 @@ if __name__ == "__main__":
         checkpoint_path, map_location="cpu", strict=False, load_baseline=False
     )
     policy = model.policy.to(device).eval()  # Use mixed precision if supported
+    calc_reward = False
 
     for dataset in data_paths:
         costs = []
@@ -154,45 +156,132 @@ if __name__ == "__main__":
                     env = RCVRPEnv(
                         check_solution=False, generator_params=generator_params
                     )
+            case "smtvrp":
+                env = SMTVRPEnv(check_solution=False, generator_params=generator_params)
+                # env = SMTVRPEnv(check_solution=False, generator_params=generator_params, seed=1234, device=device)
             case _:
                 raise ValueError(f"Problem {problem} not supported")
+        
         dataloader = get_dataloader(td_test, batch_size=batch_size)
         with (
             torch.autocast("cuda") if "cuda" in opts.device else torch.inference_mode()
         ):  # Use mixed precision if supported
             with torch.inference_mode():
-                for td_test_batch in tqdm(dataloader):
-                    if not opts.no_aug:
-                        td_test_batch = augment(td_test_batch)
-                    td_reset = env.reset(td_test_batch).to(device)
+                # 각 instance별 reward를 저장할 리스트 (robustness 측정용)
+                instance_rewards_all = []  # shape: (num_iterations, num_instances)
+                
+                for i in range(5):
+                    print(f"Iteration {i}")
+                    iteration_rewards = []  # 현재 iteration의 모든 instance별 reward
+                    
+                    for td_test_batch in tqdm(dataloader):
+                        if not opts.no_aug:
+                            td_test_batch = augment(td_test_batch)
+                        
+                        td_reset = env.reset(td_test_batch).to(device)
+                        n_start = env.get_num_starts(td_reset)
+                        
+                        start_time = time.time()
+                        if problem == "smtvrp":
+                            calc_reward = True
+                        out = policy(
+                            td_reset,
+                            env,
+                            num_starts=n_start,
+                            return_actions=True,
+                            phase="val",
+                            calc_reward=calc_reward
+                        )
+                        td_batch = batchify(
+                            td_reset, n_start
+                        )  # Expand td to batch_size * num_starts to calc. reward
+                        if env.normalize:
+                            real_r, norm_r = env.get_reward(td_batch, out["actions"])
+                            reward = real_r
+                        else:
+                            if problem == "smtvrp":
+                                reward = out["reward"]
+                                # INSERT_YOUR_CODE
+                                # out["actions"]: (batch, seq_len), count (per batch) non-overlapping zero runs
 
-                    start_time = time.time()
-                    out = policy(
-                        td_reset,
-                        env,
-                        return_actions=True,
-                        phase="val",
-                        calc_reward=False,
-                        num_starts=n_start,
-                    )
-                    td_batch = batchify(
-                        td_reset, n_start
-                    )  # Expand td to batch_size * num_starts to calc. reward
-                    if env.normalize:
-                        real_r, norm_r = env.get_reward(td_batch, out["actions"])
-                        reward = real_r
-                    else:
-                        reward = env.get_reward(td_batch, out["actions"])
-                    end_time = time.time()
-                    inference_time = end_time - start_time
-                    max_reward = (
-                        unbatchify(reward, (n_aug, n_start)).max(dim=-1)[0].max(dim=-1)[0]
-                    )
-                    costs.append(max_reward.mean().item())
-                    inference_times.append(inference_time)
+                                # import numpy as np
+                                # actions_np = out["actions"].cpu().numpy()
+                                # nonoverlap_zero_runs = []
+                                # for row in actions_np:
+                                #     is_zero = row == 0
+                                #     shifted = np.r_[False, is_zero[:-1]]
+                                #     zero_run_starts = (is_zero & ~shifted).sum()
+                                #     if len(nonoverlap_zero_runs) == 0:
+                                #         max_zero_run = zero_run_starts
+                                #     else:
+                                #         max_zero_run = max(max_zero_run, zero_run_starts)
+                            else:
+                                reward = env.get_reward(td_batch, out["actions"])
+                        end_time = time.time()
+                        inference_time = end_time - start_time
+                        max_reward = (
+                            unbatchify(reward, (n_aug, n_start)).max(dim=-1)[0].max(dim=-1)[0]
+                        )
+                        # 각 instance별 max_reward 저장 (batch 내 모든 instance)
+                        iteration_rewards.append(max_reward)
+                        
+                        costs.append(max_reward.mean().item())
+                        inference_times.append(inference_time)
+                    
+                    # 현재 iteration의 모든 instance reward를 하나로 합침
+                    iteration_rewards = torch.cat(iteration_rewards, dim=0)  # (total_instances,)
+                    instance_rewards_all.append(iteration_rewards)
 
-            print(f"Average cost:\n{-sum(costs)/len(costs):.4f}")
-            print(
-                f"Per step inference time (s):\n{sum(inference_times)/len(inference_times):.4f}"
-            )
-            print(f"Total inference time (s):\n{sum(inference_times):.4f}")
+                # instance_rewards를 (num_iterations, num_instances) 형태로 stack
+                instance_rewards_all = torch.stack(instance_rewards_all, dim=0)  # (5, num_instances)
+                
+                # smtvrp일 때만 robustness 분석 수행
+                if problem == "smtvrp":
+                    num_evals = instance_rewards_all.shape[0]
+                    num_instances = instance_rewards_all.shape[1]
+                    
+                    # 각 instance별 variance 계산: (x - mean_x)**2 / n
+                    instance_mean = instance_rewards_all.mean(dim=0)  # (num_instances,)
+                    instance_variances = ((instance_rewards_all - instance_mean.unsqueeze(0)) ** 2).sum(dim=0) / num_evals  # (num_instances,)
+                    
+                    # 데이터셋 이름 추출
+                    dataset_name = os.path.basename(dataset).replace('.npz', '')
+                    
+                    # 테이블 형식으로 출력
+                    print("\n" + "=" * 120)
+                    print(f"Dataset: {dataset_name} - Instance별 max_aug_reward (각 Evaluation)")
+                    print("=" * 120)
+                    
+                    # 헤더 출력
+                    header = f"{'Instance':<10}"
+                    for eval_idx in range(num_evals):
+                        header += f"{'Eval ' + str(eval_idx + 1):<16}"
+                    header += f"{'Mean':<16}{'Variance':<16}"
+                    print(header)
+                    print("-" * 120)
+                    
+                    # 각 instance별 데이터 출력
+                    rewards_np = instance_rewards_all.cpu().numpy()
+                    means_np = instance_mean.cpu().numpy()
+                    variances_np = instance_variances.cpu().numpy()
+                    
+                    for inst_idx in range(num_instances):
+                        row = f"{inst_idx:<10}"
+                        for eval_idx in range(num_evals):
+                            row += f"{rewards_np[eval_idx, inst_idx]:<16.6f}"
+                        row += f"{means_np[inst_idx]:<16.6f}{variances_np[inst_idx]:<16.10f}"
+                        print(row)
+                    
+                    # 요약 통계
+                    print("-" * 120)
+                    print(f"\n=== Robustness Summary ({num_evals} evaluations, {num_instances} instances) ===")
+                    print(f"Per-instance variance (mean): {instance_variances.mean().item():.10f}")
+                    print(f"Per-instance variance (std):  {instance_variances.std().item():.10f}")
+                    print(f"Per-instance variance (min):  {instance_variances.min().item():.10f}")
+                    print(f"Per-instance variance (max):  {instance_variances.max().item():.10f}")
+
+                print(f"\nAverage cost:\n{-sum(costs)/len(costs):.4f}")
+                print(
+                    f"Per step inference time (s):\n{sum(inference_times)/len(inference_times):.4f}"
+                )
+                print(f"Total inference time (s):\n{sum(inference_times):.4f}")
