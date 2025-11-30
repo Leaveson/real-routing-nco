@@ -12,6 +12,7 @@ from tensordict import TensorDict
 from .decoder import RRNetDecoder
 from .decoding import DecodingStrategy, get_decoding_strategy
 from .encoder import RRNetEncoder
+from .encoder_v2 import GlobalTrafficEncoder
 
 log = get_pylogger(__name__)
 
@@ -88,23 +89,39 @@ class RRNetPolicy(AutoregressivePolicy):
         test_decode_type: str = "greedy",
         moe_kwargs: dict = {"encoder": None, "decoder": None},
         nab_type: str = "gating",  # "gating" or "naive"
+        use_global_encoder: bool = False,
         **unused_kwargs,
     ):
         if encoder is None:
-            encoder = RRNetEncoder(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                num_layers=num_encoder_layers,
-                env_name=env_name,
-                normalization=normalization,
-                feedforward_hidden=feedforward_hidden,
-                net=encoder_network,
-                init_embedding=init_embedding,
-                init_embedding_kwargs=init_embedding_kwargs,
-                sdpa_fn=sdpa_fn if sdpa_fn_encoder is None else sdpa_fn_encoder,
-                moe_kwargs=moe_kwargs["encoder"],
-                nab_type=nab_type,
-            )
+            if use_global_encoder:
+                encoder = GlobalTrafficEncoder(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    num_layers=num_encoder_layers,
+                    env_name=env_name,
+                    normalization=normalization,
+                    feedforward_hidden=feedforward_hidden,
+                    net=encoder_network,
+                    init_embedding=init_embedding,
+                    init_embedding_kwargs=init_embedding_kwargs,
+                    sdpa_fn=sdpa_fn if sdpa_fn_encoder is None else sdpa_fn_encoder,
+                    moe_kwargs=moe_kwargs["encoder"],
+                )
+            else:
+                encoder = RRNetEncoder(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    num_layers=num_encoder_layers,
+                    env_name=env_name,
+                    normalization=normalization,
+                    feedforward_hidden=feedforward_hidden,
+                    net=encoder_network,
+                    init_embedding=init_embedding,
+                    init_embedding_kwargs=init_embedding_kwargs,
+                    sdpa_fn=sdpa_fn if sdpa_fn_encoder is None else sdpa_fn_encoder,
+                    moe_kwargs=moe_kwargs["encoder"],
+                    nab_type=nab_type,
+                )
 
         if decoder is None:
             decoder = RRNetDecoder(
